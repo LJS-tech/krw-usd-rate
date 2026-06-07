@@ -92,7 +92,7 @@ PAGE = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#1e3a8a">
-<title>By 진솔</title>
+<title>원 / 달러 환율</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
 :root{--bg:#f1f5f9;--card:#fff;--ink:#0f172a;--sub:#64748b;--blue:#2563eb;--up:#dc2626;--down:#2563eb;}
@@ -135,7 +135,7 @@ footer{text-align:center;font-size:11px;color:var(--sub);margin-top:8px;padding:
 </style>
 </head>
 <body>
-<header><h1>원 / 달러 환율</h1><span id="updated" class="updated">불러오는 중…</span></header>
+<header><h1>By 진솔</h1><span id="updated" class="updated">불러오는 중…</span></header>
 <main>
   <section class="hero card">
     <div class="hero-main">
@@ -154,7 +154,7 @@ footer{text-align:center;font-size:11px;color:var(--sub);margin-top:8px;padding:
     <div class="card stat"><div class="s-label">3개월 평균</div><div id="avg" class="s-val">—</div></div>
   </section>
   <section class="card chart-card">
-    <h2>최근 3개월 추이 (USD/KRW)<span class="hint">\n그래프를 누르거나 드래그하면 상세 표시</span></h2>
+    <h2>최근 3개월 추이 (USD/KRW)<span class="hint">그래프 상세 표시</span></h2>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
   </section>
   <section class="card table-card">
