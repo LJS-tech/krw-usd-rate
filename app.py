@@ -1,7 +1,7 @@
 """
 원화-달러 환율 조회 서버 (단일 파일 버전)
-- HTML/CSS 를 코드 안에 내장 -> templates/static 폴더 불필요
 - 그래프: 터치/마우스로 짚으면 날짜+환율 말풍선 + 세로 기준선
+- 관리자: 우측 상단 버튼 -> 암호(krwpass) -> 조회수 통계
 - 데이터: Frankfurter(ECB) 1차, yfinance 2차(백업), 30분 캐시
 """
 import datetime as dt
@@ -10,12 +10,16 @@ import os
 import threading
 import urllib.request
 
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, request, render_template_string
 
 app = Flask(__name__)
 
+ADMIN_PW = "krwpass"
+VISITS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "visits.json")
+
 _CACHE = {"ts": None, "data": None}
 _LOCK = threading.Lock()
+_VLOCK = threading.Lock()
 _TTL = dt.timedelta(minutes=30)
 _DAYS = 92
 
@@ -86,23 +90,71 @@ def get_rates():
         return _CACHE["data"]
 
 
+def _load_visits():
+    try:
+        with open(VISITS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"total": 0, "ips": [], "by_date": {}, "first": None}
+
+
+def _save_visits(v):
+    try:
+        with open(VISITS_FILE, "w", encoding="utf-8") as f:
+            json.dump(v, f)
+    except Exception:
+        pass
+
+
+def record_visit():
+    with _VLOCK:
+        v = _load_visits()
+        today = dt.date.today().isoformat()
+        if v.get("first") is None:
+            v["first"] = today
+        v["total"] = int(v.get("total", 0)) + 1
+        v.setdefault("by_date", {})
+        v["by_date"][today] = v["by_date"].get(today, 0) + 1
+        ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "")
+              .split(",")[0].strip())
+        ips = set(v.get("ips", []))
+        if ip:
+            ips.add(ip)
+        v["ips"] = list(ips)
+        _save_visits(v)
+
+
+def visit_stats():
+    v = _load_visits()
+    today = dt.date.today().isoformat()
+    return {
+        "total": int(v.get("total", 0)),
+        "today": int(v.get("by_date", {}).get(today, 0)),
+        "unique": len(v.get("ips", [])),
+        "first": v.get("first") or today,
+    }
+
+
 PAGE = r"""<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#1e3a8a">
-<title>원 / 달러 환율</title>
+<title>원/달러 환율</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
 :root{--bg:#f1f5f9;--card:#fff;--ink:#0f172a;--sub:#64748b;--blue:#2563eb;--up:#dc2626;--down:#2563eb;}
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
   background:var(--bg);color:var(--ink);padding-bottom:40px;-webkit-text-size-adjust:100%;}
-header{background:linear-gradient(135deg,#1e3a8a,#2563eb);color:#fff;padding:18px 16px;
-  display:flex;justify-content:space-between;align-items:baseline;}
-header h1{font-size:18px;font-weight:700;}
-.updated{font-size:11px;opacity:.85;}
+header{background:linear-gradient(135deg,#1e3a8a,#2563eb);color:#fff;padding:16px;
+  display:flex;justify-content:space-between;align-items:center;gap:10px;}
+.h-left h1{font-size:18px;font-weight:700;}
+.h-left .updated{font-size:11px;opacity:.85;}
+.admin-btn{background:rgba(255,255,255,0.18);color:#fff;border:1px solid rgba(255,255,255,0.35);
+  border-radius:10px;padding:8px 12px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;}
+.admin-btn:hover{background:rgba(255,255,255,0.3);}
 main{max-width:680px;margin:0 auto;padding:14px;display:flex;flex-direction:column;gap:14px;}
 .card{background:var(--card);border-radius:16px;padding:18px;box-shadow:0 1px 3px rgba(0,0,0,.06);}
 .hero{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;}
@@ -131,11 +183,31 @@ th:first-child,td:first-child{text-align:left;}
 td{padding:9px 6px;border-bottom:1px solid #f1f5f9;font-variant-numeric:tabular-nums;}
 tr:hover td{background:#f8fafc;}
 footer{text-align:center;font-size:11px;color:var(--sub);margin-top:8px;padding:0 14px;}
+.overlay{position:fixed;inset:0;background:rgba(15,23,42,0.55);display:none;
+  align-items:center;justify-content:center;padding:18px;z-index:50;}
+.overlay.show{display:flex;}
+.modal{background:#fff;border-radius:18px;padding:22px;width:100%;max-width:360px;
+  box-shadow:0 20px 50px rgba(0,0,0,.3);}
+.modal h3{font-size:17px;margin-bottom:4px;}
+.modal .sub{font-size:12px;color:var(--sub);margin-bottom:16px;}
+.adm-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;}
+.adm-cell{background:#f8fafc;border-radius:12px;padding:14px;text-align:center;}
+.adm-cell .n{font-size:24px;font-weight:800;color:var(--blue);}
+.adm-cell .t{font-size:11px;color:var(--sub);margin-top:4px;}
+.adm-foot{font-size:11px;color:var(--sub);text-align:center;margin-bottom:14px;}
+.close-btn{width:100%;background:var(--blue);color:#fff;border:none;border-radius:10px;
+  padding:11px;font-size:14px;font-weight:600;cursor:pointer;}
 @media(max-width:420px){.big{font-size:28px;}.s-val{font-size:15px;}}
 </style>
 </head>
 <body>
-<header><h1>By 진솔</h1><span id="updated" class="updated">불러오는 중…</span></header>
+<header>
+  <div class="h-left">
+    <h1>By 진솔</h1>
+    <div id="updated" class="updated">불러오는 중…</div>
+  </div>
+  <button id="adminBtn" class="admin-btn">🔒 관리자 설정</button>
+</header>
 <main>
   <section class="hero card">
     <div class="hero-main">
@@ -165,6 +237,22 @@ footer{text-align:center;font-size:11px;color:var(--sub);margin-top:8px;padding:
   </section>
 </main>
 <footer><span id="src"></span> · 데이터는 영업일 기준 · 이진솔</footer>
+
+<div id="overlay" class="overlay">
+  <div class="modal">
+    <h3>관리자 · 접속 통계</h3>
+    <div class="sub">이 사이트의 조회수 정보입니다.</div>
+    <div class="adm-grid">
+      <div class="adm-cell"><div id="a-total" class="n">—</div><div class="t">누적 접속수</div></div>
+      <div class="adm-cell"><div id="a-today" class="n">—</div><div class="t">오늘 접속수</div></div>
+      <div class="adm-cell"><div id="a-uniq" class="n">—</div><div class="t">순 방문자(IP)</div></div>
+      <div class="adm-cell"><div id="a-first" class="n" style="font-size:14px;">—</div><div class="t">집계 시작일</div></div>
+    </div>
+    <div class="adm-foot" id="a-foot"></div>
+    <button id="closeBtn" class="close-btn">닫기</button>
+  </div>
+</div>
+
 <script>
 let chart, full=false, DATA=null;
 function fmt(n){return Number(n).toLocaleString("ko-KR",{minimumFractionDigits:2,maximumFractionDigits:2});}
@@ -177,22 +265,12 @@ function renderTable(){
     tb.appendChild(tr);}
   document.getElementById("toggle").textContent=full?"접기":"전체 보기";
 }
-
-// 짚은 지점에 세로 기준선을 그리는 플러그인
-const crosshair={
-  id:"crosshair",
-  afterDraw(c){
-    const act=c.tooltip&&c.tooltip._active;
-    if(act&&act.length){
-      const x=act[0].element.x;const ya=c.chartArea;
-      const ctx=c.ctx;ctx.save();
-      ctx.beginPath();ctx.moveTo(x,ya.top);ctx.lineTo(x,ya.bottom);
-      ctx.lineWidth=1;ctx.strokeStyle="rgba(37,99,235,0.45)";
-      ctx.setLineDash([4,4]);ctx.stroke();ctx.restore();
-    }
-  }
-};
-
+const crosshair={id:"crosshair",afterDraw(c){
+  const act=c.tooltip&&c.tooltip._active;
+  if(act&&act.length){const x=act[0].element.x;const ya=c.chartArea;const ctx=c.ctx;
+    ctx.save();ctx.beginPath();ctx.moveTo(x,ya.top);ctx.lineTo(x,ya.bottom);
+    ctx.lineWidth=1;ctx.strokeStyle="rgba(37,99,235,0.45)";ctx.setLineDash([4,4]);
+    ctx.stroke();ctx.restore();}}};
 async function load(){
   const r=await fetch("/api/rates");DATA=await r.json();
   document.getElementById("big").textContent=fmt(DATA.today_usdkrw)+" 원";
@@ -217,24 +295,36 @@ async function load(){
       interaction:{mode:"index",intersect:false,axis:"x"},
       hover:{mode:"index",intersect:false},
       plugins:{legend:{display:false},
-        tooltip:{enabled:true,
-          backgroundColor:"rgba(15,23,42,0.92)",
-          titleColor:"#cbd5e1",bodyColor:"#fff",
-          titleFont:{size:12},bodyFont:{size:14,weight:"bold"},
-          padding:10,cornerRadius:8,displayColors:false,
-          callbacks:{
-            title:items=>items[0].label,
-            label:c=>{
-              const i=c.dataIndex;
+        tooltip:{enabled:true,backgroundColor:"rgba(15,23,42,0.92)",
+          titleColor:"#cbd5e1",bodyColor:"#fff",titleFont:{size:12},
+          bodyFont:{size:14,weight:"bold"},padding:10,cornerRadius:8,displayColors:false,
+          callbacks:{title:items=>items[0].label,
+            label:c=>{const i=c.dataIndex;
               return ["1 USD = "+fmt(DATA.usdkrw[i])+" 원",
-                      "1 원 = "+DATA.krwusd[i].toFixed(8)+" USD"];
-            }
-          }}},
+                      "1 원 = "+DATA.krwusd[i].toFixed(8)+" USD"];}}}},
       scales:{x:{ticks:{maxTicksLimit:6,color:"#64748b"},grid:{display:false}},
         y:{ticks:{color:"#64748b"},grid:{color:"#eef2f7"}}}}});
   renderTable();
 }
 document.getElementById("toggle").addEventListener("click",()=>{full=!full;renderTable();});
+
+const overlay=document.getElementById("overlay");
+document.getElementById("adminBtn").addEventListener("click",async()=>{
+  const pw=prompt("관리자 암호를 입력하세요");
+  if(pw===null)return;
+  const r=await fetch("/api/stats?pw="+encodeURIComponent(pw));
+  if(r.status!==200){alert("암호가 틀렸습니다.");return;}
+  const s=await r.json();
+  document.getElementById("a-total").textContent=s.total.toLocaleString("ko-KR");
+  document.getElementById("a-today").textContent=s.today.toLocaleString("ko-KR");
+  document.getElementById("a-uniq").textContent=s.unique.toLocaleString("ko-KR");
+  document.getElementById("a-first").textContent=s.first;
+  document.getElementById("a-foot").textContent="집계 시작 "+s.first+" 이후 기록";
+  overlay.classList.add("show");
+});
+document.getElementById("closeBtn").addEventListener("click",()=>overlay.classList.remove("show"));
+overlay.addEventListener("click",e=>{if(e.target===overlay)overlay.classList.remove("show");});
+
 load();setInterval(load,5*60*1000);
 </script>
 </body>
@@ -243,12 +333,20 @@ load();setInterval(load,5*60*1000);
 
 @app.route("/")
 def index():
+    record_visit()
     return render_template_string(PAGE)
 
 
 @app.route("/api/rates")
 def api_rates():
     return jsonify(get_rates())
+
+
+@app.route("/api/stats")
+def api_stats():
+    if request.args.get("pw", "") != ADMIN_PW:
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(visit_stats())
 
 
 @app.route("/healthz")
