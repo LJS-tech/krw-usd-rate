@@ -1,8 +1,7 @@
 """
-원화-달러 환율 조회 서버
-- 오늘 환율 + 최근 3개월 시계열을 그래프/표로 제공
-- 데이터: Frankfurter(ECB) 1차, yfinance 2차(백업)
-- 결과는 30분 메모리 캐시
+원화-달러 환율 조회 서버 (단일 파일 버전)
+- HTML/CSS 를 코드 안에 내장 -> templates/static 폴더 불필요
+- 데이터: Frankfurter(ECB) 1차, yfinance 2차(백업), 30분 캐시
 """
 import datetime as dt
 import json
@@ -10,14 +9,14 @@ import os
 import threading
 import urllib.request
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template_string
 
 app = Flask(__name__)
 
 _CACHE = {"ts": None, "data": None}
 _LOCK = threading.Lock()
 _TTL = dt.timedelta(minutes=30)
-_DAYS = 92  # 약 3개월
+_DAYS = 92
 
 
 def _http_json(url):
@@ -60,8 +59,7 @@ def _build():
         dates, usdkrw, src = _from_frankfurter()
     except Exception:
         dates, usdkrw, src = _from_yfinance()
-
-    krwusd = [round(1.0 / v, 8) for v in usdkrw]  # 1원당 달러
+    krwusd = [round(1.0 / v, 8) for v in usdkrw]
     last, prev = usdkrw[-1], (usdkrw[-2] if len(usdkrw) > 1 else usdkrw[-1])
     change = round(last - prev, 4)
     pct = round((change / prev) * 100, 3) if prev else 0.0
@@ -71,14 +69,10 @@ def _build():
         "today_date": dates[-1],
         "today_usdkrw": last,
         "today_krwusd": round(1.0 / last, 8),
-        "change": change,
-        "pct": pct,
-        "period_high": max(usdkrw),
-        "period_low": min(usdkrw),
+        "change": change, "pct": pct,
+        "period_high": max(usdkrw), "period_low": min(usdkrw),
         "period_avg": round(sum(usdkrw) / len(usdkrw), 2),
-        "dates": dates,
-        "usdkrw": usdkrw,
-        "krwusd": krwusd,
+        "dates": dates, "usdkrw": usdkrw, "krwusd": krwusd,
     }
 
 
@@ -91,9 +85,129 @@ def get_rates():
         return _CACHE["data"]
 
 
+PAGE = r"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#1e3a8a">
+<title>원/달러 환율</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+:root{--bg:#f1f5f9;--card:#fff;--ink:#0f172a;--sub:#64748b;--blue:#2563eb;--up:#dc2626;--down:#2563eb;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  background:var(--bg);color:var(--ink);padding-bottom:40px;-webkit-text-size-adjust:100%;}
+header{background:linear-gradient(135deg,#1e3a8a,#2563eb);color:#fff;padding:18px 16px;
+  display:flex;justify-content:space-between;align-items:baseline;}
+header h1{font-size:18px;font-weight:700;}
+.updated{font-size:11px;opacity:.85;}
+main{max-width:680px;margin:0 auto;padding:14px;display:flex;flex-direction:column;gap:14px;}
+.card{background:var(--card);border-radius:16px;padding:18px;box-shadow:0 1px 3px rgba(0,0,0,.06);}
+.hero{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;}
+.label{font-size:13px;color:var(--sub);margin-bottom:6px;}
+.big{font-size:34px;font-weight:800;letter-spacing:-.5px;}
+.chg{font-size:14px;font-weight:600;margin-top:6px;}
+.chg.up{color:var(--up);} .chg.down{color:var(--down);}
+.hero-sub{text-align:right;}
+.krw{font-size:13px;color:var(--ink);font-weight:600;}
+.date{font-size:11px;color:var(--sub);margin-top:4px;}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+.stat{text-align:center;padding:14px 8px;}
+.s-label{font-size:11px;color:var(--sub);margin-bottom:6px;}
+.s-val{font-size:17px;font-weight:700;}
+h2{font-size:15px;margin-bottom:12px;}
+.chart-wrap{position:relative;height:240px;}
+.table-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.toggle{background:#eff6ff;color:var(--blue);border:none;border-radius:8px;
+  padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;}
+.table-scroll{max-height:520px;overflow-y:auto;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+th{position:sticky;top:0;background:#f8fafc;color:var(--sub);font-weight:600;
+  padding:9px 6px;text-align:right;border-bottom:1px solid #e2e8f0;}
+th:first-child,td:first-child{text-align:left;}
+td{padding:9px 6px;border-bottom:1px solid #f1f5f9;font-variant-numeric:tabular-nums;}
+tr:hover td{background:#f8fafc;}
+footer{text-align:center;font-size:11px;color:var(--sub);margin-top:8px;padding:0 14px;}
+@media(max-width:420px){.big{font-size:28px;}.s-val{font-size:15px;}}
+</style>
+</head>
+<body>
+<header><h1>원 / 달러 환율</h1><span id="updated" class="updated">불러오는 중…</span></header>
+<main>
+  <section class="hero card">
+    <div class="hero-main">
+      <div class="label">오늘 환율 (1 USD)</div>
+      <div id="big" class="big">—</div>
+      <div id="chg" class="chg">—</div>
+    </div>
+    <div class="hero-sub">
+      <div class="krw">1원 = <span id="krwusd">—</span> USD</div>
+      <div class="date" id="tdate"></div>
+    </div>
+  </section>
+  <section class="stats">
+    <div class="card stat"><div class="s-label">3개월 최고</div><div id="hi" class="s-val">—</div></div>
+    <div class="card stat"><div class="s-label">3개월 최저</div><div id="lo" class="s-val">—</div></div>
+    <div class="card stat"><div class="s-label">3개월 평균</div><div id="avg" class="s-val">—</div></div>
+  </section>
+  <section class="card chart-card">
+    <h2>최근 3개월 추이 (USD/KRW)</h2>
+    <div class="chart-wrap"><canvas id="chart"></canvas></div>
+  </section>
+  <section class="card table-card">
+    <div class="table-head"><h2>일자별 환율</h2><button id="toggle" class="toggle">전체 보기</button></div>
+    <div class="table-scroll">
+      <table id="tbl"><thead><tr><th>날짜</th><th>USD/KRW</th><th>1원(USD)</th></tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+</main>
+<footer><span id="src"></span> · 데이터는 영업일 기준</footer>
+<script>
+let chart, full=false, DATA=null;
+function fmt(n){return Number(n).toLocaleString("ko-KR",{minimumFractionDigits:2,maximumFractionDigits:2});}
+function renderTable(){
+  const tb=document.querySelector("#tbl tbody");tb.innerHTML="";
+  const n=DATA.dates.length;const idx=[...Array(n).keys()].reverse();
+  const show=full?idx:idx.slice(0,15);
+  for(const i of show){const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${DATA.dates[i]}</td><td>${fmt(DATA.usdkrw[i])}</td><td>${DATA.krwusd[i].toFixed(8)}</td>`;
+    tb.appendChild(tr);}
+  document.getElementById("toggle").textContent=full?"접기":"전체 보기";
+}
+async function load(){
+  const r=await fetch("/api/rates");DATA=await r.json();
+  document.getElementById("big").textContent=fmt(DATA.today_usdkrw)+" 원";
+  document.getElementById("krwusd").textContent=DATA.today_krwusd.toFixed(8);
+  document.getElementById("tdate").textContent=DATA.today_date+" 기준";
+  document.getElementById("updated").textContent="갱신 "+DATA.updated;
+  document.getElementById("hi").textContent=fmt(DATA.period_high);
+  document.getElementById("lo").textContent=fmt(DATA.period_low);
+  document.getElementById("avg").textContent=fmt(DATA.period_avg);
+  document.getElementById("src").textContent="출처: "+DATA.source;
+  const up=DATA.change>=0;const chg=document.getElementById("chg");
+  chg.textContent=(up?"▲ +":"▼ ")+fmt(Math.abs(DATA.change))+` (${up?"+":""}${DATA.pct}%)`;
+  chg.className="chg "+(up?"up":"down");
+  const ctx=document.getElementById("chart");if(chart)chart.destroy();
+  chart=new Chart(ctx,{type:"line",
+    data:{labels:DATA.dates,datasets:[{data:DATA.usdkrw,borderColor:"#2563eb",borderWidth:2,
+      backgroundColor:"rgba(37,99,235,0.10)",fill:true,pointRadius:0,tension:0.25}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmt(c.parsed.y)+" 원"}}},
+      scales:{x:{ticks:{maxTicksLimit:6,color:"#64748b"},grid:{display:false}},
+        y:{ticks:{color:"#64748b"},grid:{color:"#eef2f7"}}}}});
+  renderTable();
+}
+document.getElementById("toggle").addEventListener("click",()=>{full=!full;renderTable();});
+load();setInterval(load,5*60*1000);
+</script>
+</body>
+</html>"""
+
+
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template_string(PAGE)
 
 
 @app.route("/api/rates")
@@ -107,6 +221,5 @@ def healthz():
 
 
 if __name__ == "__main__":
-    # Render 같은 클라우드는 PORT 환경변수를 줌. 로컬은 5000.
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
