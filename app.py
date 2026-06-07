@@ -15,7 +15,7 @@ from flask import Flask, jsonify, request, render_template_string
 app = Flask(__name__)
 
 # ===== 여기에 한국은행 ECOS 인증키를 붙여넣으세요 =====
-ECOS_KEY = os.environ.get("ECOS_KEY", "").strip() or "PASTE_YOUR_ECOS_KEY_HERE"
+ECOS_KEY = os.environ.get("ECOS_KEY", "").strip() or "UFI3GQ999ROMHHCDEYZZ"
 # ====================================================
 
 ADMIN_PW = "krwpass"
