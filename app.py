@@ -1,6 +1,7 @@
 """
 원화-달러 환율 조회 서버 (단일 파일 버전)
 - HTML/CSS 를 코드 안에 내장 -> templates/static 폴더 불필요
+- 그래프: 터치/마우스로 짚으면 날짜+환율 말풍선 + 세로 기준선
 - 데이터: Frankfurter(ECB) 1차, yfinance 2차(백업), 30분 캐시
 """
 import datetime as dt
@@ -117,7 +118,8 @@ main{max-width:680px;margin:0 auto;padding:14px;display:flex;flex-direction:colu
 .s-label{font-size:11px;color:var(--sub);margin-bottom:6px;}
 .s-val{font-size:17px;font-weight:700;}
 h2{font-size:15px;margin-bottom:12px;}
-.chart-wrap{position:relative;height:240px;}
+.hint{font-size:11px;color:var(--sub);font-weight:400;margin-left:6px;}
+.chart-wrap{position:relative;height:240px;touch-action:pan-y;}
 .table-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
 .toggle{background:#eff6ff;color:var(--blue);border:none;border-radius:8px;
   padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;}
@@ -152,7 +154,7 @@ footer{text-align:center;font-size:11px;color:var(--sub);margin-top:8px;padding:
     <div class="card stat"><div class="s-label">3개월 평균</div><div id="avg" class="s-val">—</div></div>
   </section>
   <section class="card chart-card">
-    <h2>최근 3개월 추이 (USD/KRW)</h2>
+    <h2>최근 3개월 추이 (USD/KRW)<span class="hint">그래프를 누르거나 드래그하면 상세 표시</span></h2>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
   </section>
   <section class="card table-card">
@@ -175,6 +177,22 @@ function renderTable(){
     tb.appendChild(tr);}
   document.getElementById("toggle").textContent=full?"접기":"전체 보기";
 }
+
+// 짚은 지점에 세로 기준선을 그리는 플러그인
+const crosshair={
+  id:"crosshair",
+  afterDraw(c){
+    const act=c.tooltip&&c.tooltip._active;
+    if(act&&act.length){
+      const x=act[0].element.x;const ya=c.chartArea;
+      const ctx=c.ctx;ctx.save();
+      ctx.beginPath();ctx.moveTo(x,ya.top);ctx.lineTo(x,ya.bottom);
+      ctx.lineWidth=1;ctx.strokeStyle="rgba(37,99,235,0.45)";
+      ctx.setLineDash([4,4]);ctx.stroke();ctx.restore();
+    }
+  }
+};
+
 async function load(){
   const r=await fetch("/api/rates");DATA=await r.json();
   document.getElementById("big").textContent=fmt(DATA.today_usdkrw)+" 원";
@@ -191,9 +209,27 @@ async function load(){
   const ctx=document.getElementById("chart");if(chart)chart.destroy();
   chart=new Chart(ctx,{type:"line",
     data:{labels:DATA.dates,datasets:[{data:DATA.usdkrw,borderColor:"#2563eb",borderWidth:2,
-      backgroundColor:"rgba(37,99,235,0.10)",fill:true,pointRadius:0,tension:0.25}]},
+      backgroundColor:"rgba(37,99,235,0.10)",fill:true,
+      pointRadius:0,pointHoverRadius:5,pointHoverBackgroundColor:"#2563eb",
+      pointHoverBorderColor:"#fff",pointHoverBorderWidth:2,tension:0.25}]},
+    plugins:[crosshair],
     options:{responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmt(c.parsed.y)+" 원"}}},
+      interaction:{mode:"index",intersect:false,axis:"x"},
+      hover:{mode:"index",intersect:false},
+      plugins:{legend:{display:false},
+        tooltip:{enabled:true,
+          backgroundColor:"rgba(15,23,42,0.92)",
+          titleColor:"#cbd5e1",bodyColor:"#fff",
+          titleFont:{size:12},bodyFont:{size:14,weight:"bold"},
+          padding:10,cornerRadius:8,displayColors:false,
+          callbacks:{
+            title:items=>items[0].label,
+            label:c=>{
+              const i=c.dataIndex;
+              return ["1 USD = "+fmt(DATA.usdkrw[i])+" 원",
+                      "1 원 = "+DATA.krwusd[i].toFixed(8)+" USD"];
+            }
+          }}},
       scales:{x:{ticks:{maxTicksLimit:6,color:"#64748b"},grid:{display:false}},
         y:{ticks:{color:"#64748b"},grid:{color:"#eef2f7"}}}}});
   renderTable();
