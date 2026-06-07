@@ -1,8 +1,8 @@
 """
 원화-달러 환율 조회 서버 (단일 파일 버전)
+- 환율 출처: 한국은행 ECOS 매매기준율 1차 / Frankfurter(ECB) 2차 / yfinance 3차
 - 그래프: 터치/마우스로 짚으면 날짜+환율 말풍선 + 세로 기준선
-- 관리자: 우측 상단 버튼 -> 암호(krwpass) -> 조회수 통계
-- 데이터: Frankfurter(ECB) 1차, yfinance 2차(백업), 30분 캐시
+- 관리자: 우측 상단 버튼 -> 암호(krwpass) -> 조회수 통계 + 초기화
 """
 import datetime as dt
 import json
@@ -13,6 +13,10 @@ import urllib.request
 from flask import Flask, jsonify, request, render_template_string
 
 app = Flask(__name__)
+
+# ===== 여기에 한국은행 ECOS 인증키를 붙여넣으세요 =====
+ECOS_KEY = os.environ.get("ECOS_KEY", "").strip() or "PASTE_YOUR_ECOS_KEY_HERE"
+# ====================================================
 
 ADMIN_PW = "krwpass"
 VISITS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "visits.json")
@@ -28,6 +32,29 @@ def _http_json(url):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=25) as r:
         return json.load(r)
+
+
+def _from_ecos():
+    if not ECOS_KEY or ECOS_KEY == "PASTE_YOUR_ECOS_KEY_HERE":
+        raise RuntimeError("no ecos key")
+    end = dt.date.today()
+    start = end - dt.timedelta(days=_DAYS)
+    url = (f"https://ecos.bok.or.kr/api/StatisticSearch/{ECOS_KEY}/json/kr/"
+           f"1/300/731Y001/D/{start:%Y%m%d}/{end:%Y%m%d}/0000001")
+    j = _http_json(url)
+    if "StatisticSearch" not in j:
+        raise RuntimeError("ecos error: " + json.dumps(j)[:200])
+    rows = j["StatisticSearch"]["row"]
+    dates, usdkrw = [], []
+    for r in rows:
+        t = r.get("TIME", "")
+        v = r.get("DATA_VALUE", "")
+        if len(t) == 8 and v:
+            dates.append(f"{t[:4]}-{t[4:6]}-{t[6:]}")
+            usdkrw.append(round(float(v), 4))
+    if not usdkrw:
+        raise RuntimeError("ecos empty")
+    return dates, usdkrw, "한국은행 ECOS (매매기준율)"
 
 
 def _from_frankfurter():
@@ -60,10 +87,14 @@ def _from_yfinance():
 
 
 def _build():
-    try:
-        dates, usdkrw, src = _from_frankfurter()
-    except Exception:
-        dates, usdkrw, src = _from_yfinance()
+    for fn in (_from_ecos, _from_frankfurter, _from_yfinance):
+        try:
+            dates, usdkrw, src = fn()
+            break
+        except Exception:
+            continue
+    else:
+        raise RuntimeError("all sources failed")
     krwusd = [round(1.0 / v, 8) for v in usdkrw]
     last, prev = usdkrw[-1], (usdkrw[-2] if len(usdkrw) > 1 else usdkrw[-1])
     change = round(last - prev, 4)
@@ -122,6 +153,12 @@ def record_visit():
             ips.add(ip)
         v["ips"] = list(ips)
         _save_visits(v)
+
+
+def reset_visits():
+    with _VLOCK:
+        today = dt.date.today().isoformat()
+        _save_visits({"total": 0, "ips": [], "by_date": {}, "first": today})
 
 
 def visit_stats():
@@ -195,8 +232,12 @@ footer{text-align:center;font-size:11px;color:var(--sub);margin-top:8px;padding:
 .adm-cell .n{font-size:24px;font-weight:800;color:var(--blue);}
 .adm-cell .t{font-size:11px;color:var(--sub);margin-top:4px;}
 .adm-foot{font-size:11px;color:var(--sub);text-align:center;margin-bottom:14px;}
-.close-btn{width:100%;background:var(--blue);color:#fff;border:none;border-radius:10px;
+.btn-row{display:flex;gap:10px;}
+.close-btn{flex:1;background:var(--blue);color:#fff;border:none;border-radius:10px;
   padding:11px;font-size:14px;font-weight:600;cursor:pointer;}
+.reset-btn{flex:1;background:#fef2f2;color:var(--up);border:1px solid #fecaca;
+  border-radius:10px;padding:11px;font-size:14px;font-weight:600;cursor:pointer;}
+.reset-btn:hover{background:#fee2e2;}
 @media(max-width:420px){.big{font-size:28px;}.s-val{font-size:15px;}}
 </style>
 </head>
@@ -226,7 +267,7 @@ footer{text-align:center;font-size:11px;color:var(--sub);margin-top:8px;padding:
     <div class="card stat"><div class="s-label">3개월 평균</div><div id="avg" class="s-val">—</div></div>
   </section>
   <section class="card chart-card">
-    <h2>최근 3개월 추이 (USD/KRW)<span class="hint">그래프 상세 표시</span></h2>
+    <h2>최근 3개월 추이 (USD/KRW)<span class="hint">그래프 상세 표시 지원</span></h2>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
   </section>
   <section class="card table-card">
@@ -249,12 +290,15 @@ footer{text-align:center;font-size:11px;color:var(--sub);margin-top:8px;padding:
       <div class="adm-cell"><div id="a-first" class="n" style="font-size:14px;">—</div><div class="t">집계 시작일</div></div>
     </div>
     <div class="adm-foot" id="a-foot"></div>
-    <button id="closeBtn" class="close-btn">닫기</button>
+    <div class="btn-row">
+      <button id="resetBtn" class="reset-btn">초기화</button>
+      <button id="closeBtn" class="close-btn">닫기</button>
+    </div>
   </div>
 </div>
 
 <script>
-let chart, full=false, DATA=null;
+let chart, full=false, DATA=null, ADMIN_PW="";
 function fmt(n){return Number(n).toLocaleString("ko-KR",{minimumFractionDigits:2,maximumFractionDigits:2});}
 function renderTable(){
   const tb=document.querySelector("#tbl tbody");tb.innerHTML="";
@@ -307,24 +351,32 @@ async function load(){
   renderTable();
 }
 document.getElementById("toggle").addEventListener("click",()=>{full=!full;renderTable();});
-
 const overlay=document.getElementById("overlay");
-document.getElementById("adminBtn").addEventListener("click",async()=>{
-  const pw=prompt("관리자 암호를 입력하세요");
-  if(pw===null)return;
-  const r=await fetch("/api/stats?pw="+encodeURIComponent(pw));
-  if(r.status!==200){alert("암호가 틀렸습니다.");return;}
-  const s=await r.json();
+function fillStats(s){
   document.getElementById("a-total").textContent=s.total.toLocaleString("ko-KR");
   document.getElementById("a-today").textContent=s.today.toLocaleString("ko-KR");
   document.getElementById("a-uniq").textContent=s.unique.toLocaleString("ko-KR");
   document.getElementById("a-first").textContent=s.first;
   document.getElementById("a-foot").textContent="집계 시작 "+s.first+" 이후 기록";
+}
+document.getElementById("adminBtn").addEventListener("click",async()=>{
+  const pw=prompt("관리자 암호를 입력하세요");
+  if(pw===null)return;
+  const r=await fetch("/api/stats?pw="+encodeURIComponent(pw));
+  if(r.status!==200){alert("암호가 틀렸습니다.");return;}
+  ADMIN_PW=pw;
+  fillStats(await r.json());
   overlay.classList.add("show");
+});
+document.getElementById("resetBtn").addEventListener("click",async()=>{
+  if(!confirm("조회수를 정말 초기화할까요? 되돌릴 수 없습니다."))return;
+  const r=await fetch("/api/reset?pw="+encodeURIComponent(ADMIN_PW));
+  if(r.status!==200){alert("초기화에 실패했습니다.");return;}
+  fillStats(await r.json());
+  alert("초기화되었습니다.");
 });
 document.getElementById("closeBtn").addEventListener("click",()=>overlay.classList.remove("show"));
 overlay.addEventListener("click",e=>{if(e.target===overlay)overlay.classList.remove("show");});
-
 load();setInterval(load,5*60*1000);
 </script>
 </body>
@@ -346,6 +398,14 @@ def api_rates():
 def api_stats():
     if request.args.get("pw", "") != ADMIN_PW:
         return jsonify({"error": "unauthorized"}), 401
+    return jsonify(visit_stats())
+
+
+@app.route("/api/reset")
+def api_reset():
+    if request.args.get("pw", "") != ADMIN_PW:
+        return jsonify({"error": "unauthorized"}), 401
+    reset_visits()
     return jsonify(visit_stats())
 
 
