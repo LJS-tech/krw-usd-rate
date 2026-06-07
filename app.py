@@ -164,7 +164,7 @@ footer{text-align:center;font-size:11px;color:var(--sub);margin-top:8px;padding:
     </div>
   </section>
 </main>
-<footer><span id="src"></span> · 데이터는 영업일 기준</footer>
+<footer><span id="src"></span> · 데이터는 영업일 기준 · 이진솔</footer>
 <script>
 let chart, full=false, DATA=null;
 function fmt(n){return Number(n).toLocaleString("ko-KR",{minimumFractionDigits:2,maximumFractionDigits:2});}
